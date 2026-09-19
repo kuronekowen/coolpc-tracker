@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 # ---------- 常數 ----------
 GMT8 = timezone(timedelta(hours=8))
 URL = 'https://www.coolpc.com.tw/evaluate.php'
-JSON_PATH = Path('coolpc_prices.json')
+JSON_PATH = Path('docs/data/coolpc_prices.json')
 
 HEADERS = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',

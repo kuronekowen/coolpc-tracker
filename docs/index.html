@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CoolPC 價格走勢</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e8eaed; --muted:#9aa0a6; --accent:#4f9cf9; --border:#2a2e37; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Segoe UI", "Noto Sans TC", sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:16px 24px; border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+  header h1 { font-size:18px; margin:0; }
+  header .meta { color:var(--muted); font-size:13px; }
+  .layout { display:grid; grid-template-columns: 380px 1fr; gap:16px; padding:16px; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  .panel { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px; }
+  .controls { display:flex; flex-direction:column; gap:8px; margin-bottom:12px; }
+  select, input { width:100%; padding:8px 10px; border-radius:6px; border:1px solid var(--border); background:#12151b; color:var(--fg); font-size:14px; }
+  ul.list { list-style:none; margin:0; padding:0; max-height:65vh; overflow:auto; }
+  li.item { padding:8px 10px; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; gap:8px; font-size:14px; }
+  li.item:hover { background:#22262f; }
+  li.item.active { background:#1e3a5f; }
+  .price { color:var(--accent); font-weight:600; white-space:nowrap; }
+  .chart-wrap { position:relative; height:70vh; }
+  .empty { color:var(--muted); text-align:center; padding:40px; }
+  .tag { display:inline-block; font-size:12px; color:var(--muted); margin-left:6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>CoolPC 價格走勢</h1>
+  <span class="meta" id="meta">載入中…</span>
+</header>
+
+<div class="layout">
+  <div class="panel">
+    <div class="controls">
+      <select id="category"></select>
+      <input id="search" type="search" placeholder="搜尋產品名稱…">
+    </div>
+    <ul class="list" id="productList"></ul>
+  </div>
+
+  <div class="panel">
+    <div class="chart-wrap"><canvas id="chart"></canvas></div>
+    <div class="empty" id="chartEmpty">點左側產品加入走勢圖，可多選比較</div>
+  </div>
+</div>
+
+<script>
+const JSON_URL = './data/coolpc_prices.json';
+const PALETTE = ['#4f9cf9','#f9a84f','#7ee081','#f76f8e','#b58cff','#5fd4d6','#ffd166','#ff8b5c'];
+
+let DATA = null;
+let selected = new Map();   // key -> { label, history }
+let chart = null;
+
+// ---------- 載入資料 ----------
+async function load() {
+  const res = await fetch(JSON_URL + '?t=' + Date.now());   // 加 t 避開快取
+  DATA = await res.json();
+
+  document.getElementById('meta').textContent =
+    `最後更新：${DATA.last_updated || '未知'}　·　共 ${DATA.categories.length} 分類`;
+
+  initCategorySelect();
+  renderList();
+}
+
+function initCategorySelect() {
+  const sel = document.getElementById('category');
+  sel.innerHTML = '<option value="__all__">全部分類</option>';
+  DATA.categories.forEach((c, i) => {
+    const o = document.createElement('option');
+    o.value = i;
+    o.textContent = c.category;
+    sel.appendChild(o);
+  });
+  sel.onchange = renderList;
+}
+
+function currentProducts() {
+  const catVal = document.getElementById('category').value;
+  const kw = document.getElementById('search').value.trim().toLowerCase();
+
+  let cats = DATA.categories;
+  if (catVal !== '__all__') cats = [DATA.categories[Number(catVal)]];
+
+  const out = [];
+  for (const c of cats) {
+    for (const p of c.products) {
+      if (kw && !p.name.toLowerCase().includes(kw)) continue;
+      out.push({ category: c.category, categoryId: c.category_id, ...p });
+    }
+  }
+  return out;
+}
+
+function productKey(p) { return p.categoryId + '::' + p.name; }
+
+function renderList() {
+  const ul = document.getElementById('productList');
+  const items = currentProducts();
+  ul.innerHTML = '';
+
+  if (items.length === 0) {
+    ul.innerHTML = '<li class="empty">沒有符合的產品</li>';
+    return;
+  }
+
+  for (const p of items) {
+    const key = productKey(p);
+    const li = document.createElement('li');
+    li.className = 'item' + (selected.has(key) ? ' active' : '');
+    li.innerHTML = `<span>${p.name}<span class="tag">${p.spec ? p.spec.slice(0, 24) : ''}</span></span>
+                    <span class="price">$${p.current_price.toLocaleString()}</span>`;
+    li.onclick = () => toggleProduct(key, p);
+    ul.appendChild(li);
+  }
+}
+
+function toggleProduct(key, p) {
+  if (selected.has(key)) selected.delete(key);
+  else selected.set(key, { label: p.name, history: p.history });
+  renderList();
+  drawChart();
+}
+
+// ---------- 圖表 ----------
+function collectDates() {
+  const set = new Set();
+  for (const { history } of selected.values()) {
+    history.forEach(h => set.add(h.date));
+  }
+  return [...set].sort();
+}
+
+function drawChart() {
+  const empty = document.getElementById('chartEmpty');
+  if (selected.size === 0) {
+    empty.style.display = 'block';
+    if (chart) { chart.destroy(); chart = null; }
+    return;
+  }
+  empty.style.display = 'none';
+
+  const dates = collectDates();
+  const datasets = [];
+  let i = 0;
+  for (const [key, { label, history }] of selected) {
+    const map = new Map(history.map(h => [h.date, h.price]));
+    datasets.push({
+      label,
+      data: dates.map(d => map.has(d) ? map.get(d) : null),
+      borderColor: PALETTE[i % PALETTE.length],
+      backgroundColor: PALETTE[i % PALETTE.length] + '33',
+      spanGaps: true,
+      tension: 0.2,
+      pointRadius: 3,
+    });
+    i++;
+  }
+
+  const cfg = {
+    type: 'line',
+    data: { labels: dates, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#e8eaed' } },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: $${ctx.parsed.y?.toLocaleString() ?? '—'}`,
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { color: '#9aa0a6' }, grid: { color: '#2a2e37' } },
+        y: {
+          ticks: { color: '#9aa0a6', callback: v => '$' + v.toLocaleString() },
+          grid: { color: '#2a2e37' },
+        },
+      },
+    },
+  };
+
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById('chart'), cfg);
+}
+
+// ---------- 啟動 ----------
+document.getElementById('search').addEventListener('input', renderList);
+load().catch(err => {
+  document.getElementById('meta').textContent = '載入失敗：' + err.message;
+});
+</script>
+</body>
+</html>
